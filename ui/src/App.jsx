@@ -68,7 +68,10 @@ function App() {
       }
     } catch (err) {
       console.error('Error processing receipt:', err);
-      setError('Failed to process receipt: ' + (err.response?.data || err.message));
+      const errorMessage = err.response?.status === 409 
+        ? 'This receipt has already been processed'
+        : 'Failed to process receipt: ' + (err.response?.data?.error || err.message);
+      setError(errorMessage);
     }
   };
 

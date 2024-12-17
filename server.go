@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	"github.com/lib/pq"
 )
 
 type Server struct {
@@ -63,6 +64,23 @@ func (s *Server) ProcessReceipt(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{
 			"error": err.Error(),
+		})
+		return
+	}
+
+	// Check for duplicates
+	isDuplicate, err := s.isDuplicateReceipt(&receipt)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "Failed to check for duplicate receipt",
+		})
+		return
+	}
+	if isDuplicate {
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "This receipt has already been processed",
 		})
 		return
 	}
@@ -172,4 +190,45 @@ func validateReceipt(r *Receipt) error {
 	}
 
 	return nil
+}
+
+func (s *Server) isDuplicateReceipt(receipt *Receipt) (bool, error) {
+	var exists bool
+	query := `
+		SELECT EXISTS (
+			SELECT 1 FROM receipts r
+			WHERE r.retailer = $1
+			AND r.purchase_date = $2
+			AND r.purchase_time = $3
+			AND r.total = $4
+			AND (
+				SELECT string_agg(short_description || ':' || price, ',' ORDER BY short_description)
+				FROM items
+				WHERE items.receipt_id = r.id
+			) = (
+				SELECT string_agg(d || ':' || p, ',' ORDER BY d)
+				FROM unnest($5::text[], $6::text[]) AS t(d, p)
+			)
+		)
+	`
+
+	// Prepare the items arrays
+	itemDescs := make([]string, len(receipt.Items))
+	itemPrices := make([]string, len(receipt.Items))
+	for i, item := range receipt.Items {
+		itemDescs[i] = item.ShortDescription
+		itemPrices[i] = item.Price
+	}
+
+	err := s.store.db.QueryRow(
+		query,
+		receipt.Retailer,
+		receipt.PurchaseDate,
+		receipt.PurchaseTime,
+		receipt.Total,
+		pq.Array(itemDescs),
+		pq.Array(itemPrices),
+	).Scan(&exists)
+
+	return exists, err
 }
