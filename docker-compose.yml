@@ -7,6 +7,16 @@ services:
       - "8080:8080"
     environment:
       - CONFIG_PATH=/app/config.yaml
+      - DB_USER=${POSTGRES_USER:-postgres}
+      - DB_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - DB_NAME=${POSTGRES_DB:-receipts}
+      - DB_HOST=${POSTGRES_HOST:-db}
+      - DB_PORT=${POSTGRES_PORT:-5432}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - receipt-network
 
   ui:
     build:
@@ -14,7 +24,32 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3000:80"
-    environment:
-      - REACT_APP_API_URL=http://localhost:8080
     depends_on:
       - app
+    networks:
+      - receipt-network
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-receipts}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - receipt-network
+
+volumes:
+  postgres_data:
+
+networks:
+  receipt-network:
+    driver: bridge

@@ -13,20 +13,29 @@ import (
 
 type Server struct {
 	config *Config
-	store  *MemoryStore
+	store  *PostgresStore
 	router *mux.Router
 }
 
-func NewServer(cfg *Config) *Server {
+func NewServer(cfg *Config) (*Server, error) {
+	if err := runMigrations(cfg); err != nil {
+		return nil, fmt.Errorf("failed to run migrations: %v", err)
+	}
+
+	store, err := NewPostgresStore(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize database: %v", err)
+	}
+
 	s := &Server{
 		config: cfg,
-		store:  NewMemoryStore(),
+		store:  store,
 		router: mux.NewRouter(),
 	}
 
 	s.router.Use(enableCORS)
 	s.setupRoutes()
-	return s
+	return s, nil
 }
 
 func (s *Server) setupRoutes() {

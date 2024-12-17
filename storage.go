@@ -1,54 +1,175 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	_ "github.com/lib/pq"
 )
 
-type MemoryStore struct {
-	mu       sync.RWMutex
-	receipts map[string]*Receipt
+type PostgresStore struct {
+	db *sql.DB
 }
 
-func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{
-		receipts: make(map[string]*Receipt),
+func NewPostgresStore(cfg *Config) (*PostgresStore, error) {
+	connStr := fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+		cfg.Database.Host,
+		cfg.Database.Port,
+		cfg.Database.User,
+		cfg.Database.Password,
+		cfg.Database.Name,
+	)
+
+	db, err := sql.Open("postgres", connStr)
+	if err != nil {
+		return nil, fmt.Errorf("error opening database: %v", err)
 	}
+
+	if err := db.Ping(); err != nil {
+		return nil, fmt.Errorf("error connecting to the database: %v", err)
+	}
+
+	return &PostgresStore{db: db}, nil
 }
 
-func (s *MemoryStore) SaveReceipt(receipt *Receipt) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *PostgresStore) SaveReceipt(receipt *Receipt) error {
+	query := `
+		INSERT INTO receipts (
+			id, retailer, purchase_date, purchase_time, total, points, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id`
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("error starting transaction: %v", err)
+	}
+	defer tx.Rollback()
 
 	if receipt.ID == "" {
 		receipt.ID = uuid.New().String()
 	}
 	receipt.CreatedAt = time.Now()
-	s.receipts[receipt.ID] = receipt
-	return nil
+
+	_, err = tx.Exec(
+		query,
+		receipt.ID,
+		receipt.Retailer,
+		receipt.PurchaseDate,
+		receipt.PurchaseTime,
+		receipt.Total,
+		receipt.Points,
+		receipt.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("error saving receipt: %v", err)
+	}
+
+	// Insert items
+	for _, item := range receipt.Items {
+		_, err = tx.Exec(`
+			INSERT INTO items (
+				receipt_id, short_description, price
+			) VALUES ($1, $2, $3)
+		`, receipt.ID, item.ShortDescription, item.Price)
+		if err != nil {
+			return fmt.Errorf("error saving item: %v", err)
+		}
+	}
+
+	return tx.Commit()
 }
 
-func (s *MemoryStore) GetReceipt(id string) (*Receipt, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	receipt, exists := s.receipts[id]
-	if !exists {
+func (s *PostgresStore) GetReceipt(id string) (*Receipt, error) {
+	receipt := &Receipt{}
+	err := s.db.QueryRow(`
+		SELECT id, retailer, purchase_date, purchase_time, total, points, created_at
+		FROM receipts WHERE id = $1
+	`, id).Scan(
+		&receipt.ID,
+		&receipt.Retailer,
+		&receipt.PurchaseDate,
+		&receipt.PurchaseTime,
+		&receipt.Total,
+		&receipt.Points,
+		&receipt.CreatedAt,
+	)
+	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("receipt not found: %s", id)
 	}
+	if err != nil {
+		return nil, fmt.Errorf("error getting receipt: %v", err)
+	}
+
+	// Get items
+	rows, err := s.db.Query(`
+		SELECT short_description, price
+		FROM items WHERE receipt_id = $1
+	`, id)
+	if err != nil {
+		return nil, fmt.Errorf("error getting items: %v", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var item Item
+		if err := rows.Scan(&item.ShortDescription, &item.Price); err != nil {
+			return nil, fmt.Errorf("error scanning item: %v", err)
+		}
+		receipt.Items = append(receipt.Items, item)
+	}
+
 	return receipt, nil
 }
 
-func (s *MemoryStore) ListReceipts() ([]*Receipt, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *PostgresStore) ListReceipts() ([]*Receipt, error) {
+	rows, err := s.db.Query(`
+		SELECT id, retailer, purchase_date, purchase_time, total, points, created_at
+		FROM receipts ORDER BY created_at DESC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("error listing receipts: %v", err)
+	}
+	defer rows.Close()
 
-	receipts := make([]*Receipt, 0, len(s.receipts))
-	for _, receipt := range s.receipts {
+	var receipts []*Receipt
+	for rows.Next() {
+		receipt := &Receipt{}
+		err := rows.Scan(
+			&receipt.ID,
+			&receipt.Retailer,
+			&receipt.PurchaseDate,
+			&receipt.PurchaseTime,
+			&receipt.Total,
+			&receipt.Points,
+			&receipt.CreatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("error scanning receipt: %v", err)
+		}
+
+		// Get items for each receipt
+		itemRows, err := s.db.Query(`
+			SELECT short_description, price
+			FROM items WHERE receipt_id = $1
+		`, receipt.ID)
+		if err != nil {
+			return nil, fmt.Errorf("error getting items: %v", err)
+		}
+		defer itemRows.Close()
+
+		for itemRows.Next() {
+			var item Item
+			if err := itemRows.Scan(&item.ShortDescription, &item.Price); err != nil {
+				return nil, fmt.Errorf("error scanning item: %v", err)
+			}
+			receipt.Items = append(receipt.Items, item)
+		}
+
 		receipts = append(receipts, receipt)
 	}
+
 	return receipts, nil
 }

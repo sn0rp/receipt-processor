@@ -10,6 +10,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # Copy only Go files and config
 COPY *.go ./
 COPY config.yaml ./
+COPY migrations ./migrations/
 
 RUN go build -o receipt-processor
 
@@ -18,6 +19,7 @@ FROM alpine:latest
 
 WORKDIR /app
 COPY --from=BUILDER /app/receipt-processor .
+COPY --from=BUILDER /app/migrations ./migrations/
 COPY config.yaml ./
 
 EXPOSE 8080

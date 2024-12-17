@@ -17,7 +17,7 @@ function App() {
     try {
       const response = await axios.get(`${API_URL}/receipts`);
       const receiptsWithPoints = await Promise.all(
-        response.data.map(async (receipt) => {
+        (response.data || []).map(async (receipt) => {
           try {
             const pointsResponse = await axios.get(`${API_URL}/receipts/${receipt.id}/points`);
             return { ...receipt, points: pointsResponse.data.points };
