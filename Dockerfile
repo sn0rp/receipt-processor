@@ -4,7 +4,8 @@ FROM golang:1.21-alpine AS BUILDER
 WORKDIR /app
 
 COPY go.* ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
 # Copy only Go files and config
 COPY *.go ./

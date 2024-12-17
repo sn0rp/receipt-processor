@@ -58,7 +58,10 @@ func calculatePoints(receipt *Receipt) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if purchaseTime.Hour() >= 14 && purchaseTime.Hour() < 16 {
+	hour := purchaseTime.Hour()
+	minute := purchaseTime.Minute()
+
+	if (hour == 14 && minute > 0) || hour == 15 {
 		points += 10
 	}
 
